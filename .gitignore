@@ -1,0 +1,21 @@
+# Ignore environment configuration files containing sensitive credentials
+.env
+
+# Ignore Python compiled files and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ignore test logs and output JSON files
+*.log
+deepseek_chat_history.json
+deepseek_response.json
+
+# Ignore IDE configuration files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
