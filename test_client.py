@@ -1,7 +1,4 @@
-"""
-Test nhanh DeepSeek client
-Chạy: python test_client.py
-"""
+
 
 from deepseek_client import login, create_session, collect_response, delete_session
 

@@ -1,7 +1,4 @@
-"""
-DeepSeek Client - dùng cloakbrowser làm HTTP transport
-Fingerprint giống Windows Chrome thật, không bị detect như requests thuần
-"""
+
 
 import json
 import time

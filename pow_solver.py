@@ -1,8 +1,3 @@
-"""
-DeepSeekHashV1 PoW Solver
-Port từ Go sang Python - thuật toán là SHA3-256 biến thể:
-skip round 0 của Keccak-f[1600], chỉ chạy rounds 1..23
-"""
 
 import struct
 import base64
