@@ -3,7 +3,16 @@ DeepSeek API Server - OpenAI Compatible
 Flask WSGI server (không dùng asyncio, không conflict với cloakbrowser)
 """
 
+import sys
 import os
+
+# Force UTF-8 encoding for stdout and stderr on Windows to avoid UnicodeEncodeError
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
 
 def load_env():
     env_path = os.path.join(os.path.dirname(__file__), ".env")
@@ -58,9 +67,13 @@ if accounts_env:
             })
 
 if not ACCOUNTS:
+    email = os.environ.get("DEEPSEEK_EMAIL", "").strip()
+    password = os.environ.get("DEEPSEEK_PASSWORD", "").strip()
+    if not email or not password:
+        raise ValueError("LỖI: Chưa cấu hình DEEPSEEK_EMAIL hoặc DEEPSEEK_PASSWORD trong file .env!")
     ACCOUNTS.append({
-        "email":    os.environ.get("DEEPSEEK_EMAIL", "k.i.l.i.a.n.o.k.o.n.d.u.ru@gmail.com"),
-        "password": os.environ.get("DEEPSEEK_PASSWORD", "Taipro@123"),
+        "email":    email,
+        "password": password,
         "token":    None,
     })
 

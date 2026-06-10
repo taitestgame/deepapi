@@ -1,9 +1,36 @@
+import sys
+import os
 
+# Force UTF-8 encoding for stdout and stderr on Windows to avoid UnicodeEncodeError
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
 
 from deepseek_client import login, create_session, collect_response, delete_session
 
-EMAIL    = ""
-PASSWORD = ""
+def load_env():
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("=", 1)
+                if len(parts) == 2:
+                    key = parts[0].strip()
+                    val = parts[1].strip()
+                    if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                        val = val[1:-1]
+                    os.environ[key] = val
+
+load_env()
+
+EMAIL    = os.environ.get("DEEPSEEK_EMAIL", "")
+PASSWORD = os.environ.get("DEEPSEEK_PASSWORD", "")
 
 def test():
     print("=== TEST DEEPSEEK CLIENT ===\n")

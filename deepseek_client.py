@@ -1,11 +1,20 @@
 
 
+import sys
 import json
 import time
 import threading
 import queue
 from cloakbrowser import launch
 from pow_solver import solve_challenge
+
+# Force UTF-8 encoding for stdout and stderr on Windows to avoid UnicodeEncodeError
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
 
 # ============================================================
 # CONSTANTS
