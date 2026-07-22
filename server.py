@@ -33,6 +33,7 @@ def load_env():
 load_env()
 
 import json
+import re
 import time
 import uuid
 import threading
@@ -69,13 +70,14 @@ if accounts_env:
 if not ACCOUNTS:
     email = os.environ.get("DEEPSEEK_EMAIL", "").strip()
     password = os.environ.get("DEEPSEEK_PASSWORD", "").strip()
-    if not email or not password:
-        raise ValueError("LỖI: Chưa cấu hình DEEPSEEK_EMAIL hoặc DEEPSEEK_PASSWORD trong file .env!")
-    ACCOUNTS.append({
-        "email":    email,
-        "password": password,
-        "token":    None,
-    })
+    if email and password:
+        ACCOUNTS.append({
+            "email":    email,
+            "password": password,
+            "token":    None,
+        })
+    else:
+        print("[warn] Chưa cấu hình DEEPSEEK_EMAIL hoặc DEEPSEEK_PASSWORD trong file .env")
 
 AVAILABLE_MODELS = [
     "deepseek-v4-flash",
@@ -112,11 +114,35 @@ MODEL_ALIASES = {
 }
 
 # ============================================================
-# TOKEN MANAGER
+# TOKEN MANAGER (WITH DISK CACHE)
 # ============================================================
 
+TOKEN_CACHE_FILE = os.path.join(os.path.dirname(__file__), ".tokens.json")
 _account_lock = threading.Lock()
 _current_account_index = 0
+
+def load_cached_tokens():
+    if os.path.exists(TOKEN_CACHE_FILE):
+        try:
+            with open(TOKEN_CACHE_FILE, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+                for acc in ACCOUNTS:
+                    email = acc.get("email")
+                    if email in cached and cached[email]:
+                        acc["token"] = cached[email]
+                        print(f"[auth] Đã nạp token đệm từ file cho: {email}")
+        except Exception as e:
+            print(f"[auth] Không thể đọc token đệm: {e}")
+
+def save_cached_tokens():
+    try:
+        data = {acc["email"]: acc["token"] for acc in ACCOUNTS if acc.get("email") and acc.get("token")}
+        with open(TOKEN_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[auth] Không thể lưu token đệm: {e}")
+
+load_cached_tokens()
 
 def get_active_token() -> str:
     global _current_account_index
@@ -134,15 +160,14 @@ def get_active_token() -> str:
                         password=acc.get("password")
                     )
                     acc["token"] = token
+                    save_cached_tokens()
                     print(f"[auth] Login OK cho tài khoản #{_current_account_index + 1}: {token[:20]}...")
                 except Exception as e:
                     print(f"[auth] Tài khoản #{_current_account_index + 1} ({acc.get('email')}) đăng nhập lỗi: {e}")
-                    # Chuyển sang tài khoản tiếp theo nếu tài khoản này lỗi đăng nhập
                     _current_account_index = (_current_account_index + 1) % len(ACCOUNTS)
                     continue
             
             token = acc["token"]
-            # Xoay vòng tài khoản cho lần gọi tiếp theo
             _current_account_index = (_current_account_index + 1) % len(ACCOUNTS)
             return token
             
@@ -159,6 +184,7 @@ def invalidate_token(token: str = None):
         else:
             for acc in ACCOUNTS:
                 acc["token"] = None
+        save_cached_tokens()
 
 # ============================================================
 # FLASK APP
@@ -166,7 +192,6 @@ def invalidate_token(token: str = None):
 
 app = Flask(__name__)
 
-# CORS support for web clients
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
@@ -198,11 +223,144 @@ def require_auth():
     return None
 
 # ============================================================
-# PROMPT BUILDER
+# PROMPT BUILDER & TOOL CALL PARSER
 # ============================================================
 
-def build_prompt(messages: list) -> str:
+def parse_tool_calls_from_text(text: str):
+    if not text:
+        return False, [], text
+
+    tool_calls = []
+    clean_text = text
+
+    # 1. Match all ```json_tool_call ... ``` blocks
+    pattern_json_tool_call = r"```json_tool_call\s*(\{[\s\S]*?\})\s*```"
+    matches = re.findall(pattern_json_tool_call, text)
+    if matches:
+        for m in matches:
+            try:
+                data = json.loads(m)
+                if isinstance(data, dict) and "name" in data:
+                    func_name = data["name"]
+                    args = data.get("arguments", {})
+                    if not isinstance(args, str):
+                        args = json.dumps(args, ensure_ascii=False)
+                    tool_calls.append({
+                        "id": f"call_{uuid.uuid4().hex[:16]}",
+                        "type": "function",
+                        "function": {
+                            "name": func_name,
+                            "arguments": args
+                        }
+                    })
+            except Exception as e:
+                print(f"[tool_parser] JSON parse error in block: {e}")
+        
+        if tool_calls:
+            clean_text = re.sub(pattern_json_tool_call, "", text).strip()
+            return True, tool_calls, clean_text
+
+    # 2. Match general ```json ... ``` blocks containing "name" and "arguments"
+    pattern_general_json = r"```json\s*(\{[\s\S]*?\"name\"[\s\S]*?\})\s*```"
+    matches_general = re.findall(pattern_general_json, text)
+    if matches_general:
+        for m in matches_general:
+            try:
+                data = json.loads(m)
+                if isinstance(data, dict) and "name" in data:
+                    func_name = data["name"]
+                    args = data.get("arguments", {})
+                    if not isinstance(args, str):
+                        args = json.dumps(args, ensure_ascii=False)
+                    tool_calls.append({
+                        "id": f"call_{uuid.uuid4().hex[:16]}",
+                        "type": "function",
+                        "function": {
+                            "name": func_name,
+                            "arguments": args
+                        }
+                    })
+            except Exception:
+                pass
+        
+        if tool_calls:
+            clean_text = re.sub(pattern_general_json, "", text).strip()
+            return True, tool_calls, clean_text
+
+    # 3. Fallback: Entire text is a JSON object or array of objects
+    stripped = text.strip()
+    if (stripped.startswith("{") or stripped.startswith("[")) and '"name"' in stripped:
+        try:
+            data = json.loads(stripped)
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict) and "name" in item:
+                        func_name = item["name"]
+                        args = item.get("arguments", {})
+                        if not isinstance(args, str):
+                            args = json.dumps(args, ensure_ascii=False)
+                        tool_calls.append({
+                            "id": f"call_{uuid.uuid4().hex[:16]}",
+                            "type": "function",
+                            "function": {
+                                "name": func_name,
+                                "arguments": args
+                            }
+                        })
+                if tool_calls:
+                    return True, tool_calls, ""
+            elif isinstance(data, dict) and "name" in data:
+                func_name = data["name"]
+                args = data.get("arguments", {})
+                if not isinstance(args, str):
+                    args = json.dumps(args, ensure_ascii=False)
+                tool_calls.append({
+                    "id": f"call_{uuid.uuid4().hex[:16]}",
+                    "type": "function",
+                    "function": {
+                        "name": func_name,
+                        "arguments": args
+                    }
+                })
+                return True, tool_calls, ""
+        except Exception:
+            pass
+
+    return False, [], text
+
+
+def build_prompt(messages: list, tools: list = None) -> str:
     parts = []
+    
+    tool_system_prompt = ""
+    if tools and isinstance(tools, list):
+        tool_defs = []
+        for t in tools:
+            if isinstance(t, dict):
+                if t.get("type") == "function" and "function" in t:
+                    tool_defs.append(t["function"])
+                else:
+                    tool_defs.append(t)
+        
+        if tool_defs:
+            tool_system_prompt = (
+                "\n\n[AVAILABLE TOOLS]\n"
+                "You have access to the following tools:\n"
+                "```json\n"
+                f"{json.dumps(tool_defs, indent=2, ensure_ascii=False)}\n"
+                "```\n\n"
+                "[TOOL CALLING INSTRUCTIONS]\n"
+                "If you need to call a tool, respond ONLY with a JSON block in the exact format:\n"
+                "```json_tool_call\n"
+                "{\n"
+                '  "name": "function_name",\n'
+                '  "arguments": { "param1": "value1" }\n'
+                "}\n"
+                "```\n"
+                "If no tool call is needed, respond normally with plain text."
+            )
+
+    has_system_msg = False
     for msg in messages:
         role    = msg.get("role", "user")
         content = msg.get("content", "")
@@ -218,11 +376,32 @@ def build_prompt(messages: list) -> str:
             content = str(content)
 
         if role == "system":
-            parts.append(f"<system>\n{content}\n</system>")
+            has_system_msg = True
+            combined_sys = content + tool_system_prompt if tool_system_prompt else content
+            parts.append(f"<system>\n{combined_sys}\n</system>")
         elif role == "user":
             parts.append(f"Human: {content}")
         elif role == "assistant":
+            tool_calls = msg.get("tool_calls")
+            if tool_calls and isinstance(tool_calls, list):
+                tc_str_list = []
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    fn_name = fn.get("name", "")
+                    fn_args = fn.get("arguments", "")
+                    tc_str_list.append(f'```json_tool_call\n{{\n  "name": "{fn_name}",\n  "arguments": {fn_args}\n}}\n```')
+                tc_str = "\n".join(tc_str_list)
+                if content:
+                    content = f"{content}\n{tc_str}"
+                else:
+                    content = tc_str
             parts.append(f"Assistant: {content}")
+        elif role == "tool":
+            tool_call_id = msg.get("tool_call_id", "")
+            parts.append(f"Human: [Tool Result for {tool_call_id}]: {content}")
+
+    if not has_system_msg and tool_system_prompt:
+        parts.insert(0, f"<system>\n{tool_system_prompt}\n</system>")
 
     parts.append("Assistant:")
     return "\n\n".join(parts)
@@ -254,7 +433,8 @@ def make_chunk(completion_id: str, model: str, delta: dict,
 # ============================================================
 
 def stream_generator(token: str, prompt: str, model: str,
-                     thinking_enabled: bool, completion_id: str):
+                      thinking_enabled: bool, completion_id: str,
+                      has_tools: bool = False):
     """Generator yield SSE strings theo OpenAI format"""
 
     sess = make_session()
@@ -263,6 +443,7 @@ def stream_generator(token: str, prompt: str, model: str,
     session_id     = None
     msg_id         = 0
     last_status    = ""
+    accumulated_text = ""
 
     try:
         session_id = create_session(token, session=sess)
@@ -275,7 +456,7 @@ def stream_generator(token: str, prompt: str, model: str,
         )
 
         def consume(lines_gen):
-            nonlocal msg_id, last_status
+            nonlocal msg_id, last_status, accumulated_text
             for chunk in parse_sse_lines(lines_gen):
                 if chunk.get("response_message_id"):
                     msg_id = int(chunk["response_message_id"])
@@ -292,7 +473,9 @@ def stream_generator(token: str, prompt: str, model: str,
                     if "thinking" in p.lower():
                         yield make_chunk(completion_id, model, {"content": v})
                     else:
-                        yield make_chunk(completion_id, model, {"content": v})
+                        accumulated_text += v
+                        if not has_tools:
+                            yield make_chunk(completion_id, model, {"content": v})
 
         yield from consume(lines)
 
@@ -309,7 +492,17 @@ def stream_generator(token: str, prompt: str, model: str,
             last_status = ""
             yield from consume(cont)
 
-        yield make_chunk(completion_id, model, {}, finish_reason="stop")
+        if has_tools:
+            has_tool_call, tool_calls, clean_text = parse_tool_calls_from_text(accumulated_text)
+            if has_tool_call:
+                yield make_chunk(completion_id, model, {"tool_calls": tool_calls}, finish_reason="tool_calls")
+            else:
+                if clean_text:
+                    yield make_chunk(completion_id, model, {"content": clean_text})
+                yield make_chunk(completion_id, model, {}, finish_reason="stop")
+        else:
+            yield make_chunk(completion_id, model, {}, finish_reason="stop")
+
         yield "data: [DONE]\n\n"
 
     except Exception as e:
@@ -317,9 +510,6 @@ def stream_generator(token: str, prompt: str, model: str,
         err = {"error": {"type": "api_error", "message": str(e)}}
         yield f"data: {json.dumps(err)}\n\n"
     finally:
-        # Giữ lại lịch sử chat trên DeepSeek, không xóa session
-        # if session_id:
-        #     delete_session(token, session_id, http_session=sess)
         pass
 
 # ============================================================
@@ -355,13 +545,14 @@ def chat_completions():
     body = request.get_json(force=True, silent=True) or {}
     model   = resolve_model(body.get("model", "deepseek-v4-flash"))
     msgs    = body.get("messages", [])
+    tools   = body.get("tools", None)
     stream  = bool(body.get("stream", False))
     thinking_flag = body.get("thinking", None)
 
     if not msgs:
         return jsonify({"error": {"message": "messages required"}}), 400
 
-    prompt = build_prompt(msgs)
+    prompt = build_prompt(msgs, tools=tools)
 
     thinking_enabled = bool(thinking_flag) if thinking_flag is not None \
                        else (get_model_type(model) == "reasoner")
@@ -378,7 +569,7 @@ def chat_completions():
     # ── STREAM MODE ──
     if stream:
         return Response(
-            stream_generator(token, prompt, model, thinking_enabled, completion_id),
+            stream_generator(token, prompt, model, thinking_enabled, completion_id, has_tools=bool(tools)),
             mimetype="text/event-stream",
             headers={
                 "Cache-Control":    "no-cache",
@@ -402,13 +593,27 @@ def chat_completions():
         invalidate_token(token)
         return jsonify({"error": {"message": str(e)}}), 500
     finally:
-        # Giữ lại lịch sử chat trên DeepSeek, không xóa session
-        # if session_id:
-        #     delete_session(token, session_id, http_session=sess)
         pass
 
+    raw_text = result.get("text", "")
     prompt_tokens     = len(prompt) // 4
-    completion_tokens = len(result.get("text", "")) // 4
+    completion_tokens = len(raw_text) // 4
+
+    has_tool_call, tool_calls, clean_text = parse_tool_calls_from_text(raw_text) if tools else (False, [], raw_text)
+
+    if has_tool_call:
+        msg_obj = {
+            "role": "assistant",
+            "content": clean_text if clean_text else None,
+            "tool_calls": tool_calls
+        }
+        finish_reason = "tool_calls"
+    else:
+        msg_obj = {
+            "role": "assistant",
+            "content": raw_text
+        }
+        finish_reason = result.get("finish_reason", "stop")
 
     resp = {
         "id":      completion_id,
@@ -417,8 +622,8 @@ def chat_completions():
         "model":   model,
         "choices": [{
             "index":         0,
-            "message":       {"role": "assistant", "content": result.get("text", "")},
-            "finish_reason": result.get("finish_reason", "stop"),
+            "message":       msg_obj,
+            "finish_reason": finish_reason,
         }],
         "usage": {
             "prompt_tokens":     prompt_tokens,
@@ -457,11 +662,15 @@ if __name__ == "__main__":
     threading.Thread(target=get_active_token, daemon=True).start()
     print("=" * 50)
 
-    # Flask threaded=True: mỗi request chạy trong thread riêng
-    # Không dùng asyncio → không conflict với cloakbrowser
-    app.run(
-        host=host,
-        port=port,
-        threaded=True,
-        debug=False,
-    )
+    try:
+        from waitress import serve
+        print(f"[server] Khởi chạy sản phẩm WSGI server (Waitress) tại http://{host if host != '0.0.0.0' else 'localhost'}:{port}...")
+        serve(app, host=host, port=port, threads=16)
+    except ImportError:
+        print("[server] Waitress chưa cài đặt, sử dụng Flask dev server...")
+        app.run(
+            host=host,
+            port=port,
+            threaded=True,
+            debug=False,
+        )

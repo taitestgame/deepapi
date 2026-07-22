@@ -1,5 +1,6 @@
 # Ignore environment configuration files containing sensitive credentials
 .env
+.tokens.json
 
 # Ignore Python compiled files and bytecode
 __pycache__/

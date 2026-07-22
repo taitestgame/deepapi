@@ -10,60 +10,68 @@ if sys.platform.startswith('win'):
         pass
 
 from deepseek_client import login, create_session, collect_response, delete_session
+from server import build_prompt, parse_tool_calls_from_text
 
-def load_env():
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split("=", 1)
-                if len(parts) == 2:
-                    key = parts[0].strip()
-                    val = parts[1].strip()
-                    if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
-                        val = val[1:-1]
-                    os.environ[key] = val
+def test_tool_calling_logic():
+    print("=== TEST OFFLINE TOOL CALLING LOGIC ===")
 
-load_env()
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Đọc nội dung file",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_dir",
+                "description": "Liệt kê thư mục",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
+            }
+        }
+    ]
 
-EMAIL    = os.environ.get("DEEPSEEK_EMAIL", "")
-PASSWORD = os.environ.get("DEEPSEEK_PASSWORD", "")
+    messages = [{"role": "user", "content": "Kiểm tra thư mục và đọc file README"}]
+    prompt = build_prompt(messages, tools=tools)
+    assert "[AVAILABLE TOOLS]" in prompt
+    print("[PASSED] Prompt injection OK!")
+
+    # Test Multiple Tool Calls in single response
+    multi_output = """Tôi sẽ liệt kê thư mục và đọc file README.
+
+```json_tool_call
+{
+  "name": "list_dir",
+  "arguments": { "path": "./" }
+}
+```
+
+```json_tool_call
+{
+  "name": "read_file",
+  "arguments": { "path": "./README.md" }
+}
+```"""
+
+    has_tool, tool_calls, clean_text = parse_tool_calls_from_text(multi_output)
+    print(f"\n--- MULTIPLE TOOL CALLS TEST ---")
+    print(f"Has Tool Call: {has_tool}")
+    print(f"Tool Calls Count: {len(tool_calls)}")
+    for tc in tool_calls:
+        print(f"  - Tool: {tc['function']['name']}, Args: {tc['function']['arguments']}")
+
+    assert has_tool is True
+    assert len(tool_calls) == 2
+    assert tool_calls[0]["function"]["name"] == "list_dir"
+    assert tool_calls[1]["function"]["name"] == "read_file"
+    print("[PASSED] Multiple Tool Calls parsing OK!")
 
 def test():
     print("=== TEST DEEPSEEK CLIENT ===\n")
-
-    # 1. Login
-    print("[1] Đang login...")
-    token = login(email=EMAIL, password=PASSWORD)
-    print(f"    Token: {token[:30]}...\n")
-
-    # 2. Tạo session
-    print("[2] Tạo session...")
-    session_id = create_session(token)
-    print(f"    Session ID: {session_id}\n")
-
-    # 3. Gửi message
-    print("[3] Gửi message: 'Xin chào! Bạn là ai?'")
-    result = collect_response(
-        token=token,
-        session_id=session_id,
-        prompt="Human: Xin chào! Bạn là ai?\n\nAssistant:",
-        model="deepseek-v4-flash",
-        thinking=False,
-    )
-
-    print(f"\n=== KẾT QUẢ ===")
-    print(f"Text: {result['text']}")
-    if result.get('thinking'):
-        print(f"Thinking: {result['thinking'][:100]}...")
-    print(f"Finish reason: {result['finish_reason']}")
-
-    # 4. Giữ lại session (không xóa)
-    # delete_session(token, session_id)
-    print("\n[4] Session được giữ lại. Done!")
+    test_tool_calling_logic()
 
 if __name__ == "__main__":
     test()
