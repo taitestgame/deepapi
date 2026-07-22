@@ -1,79 +1,356 @@
-# 🚀 DeepSeek Web-to-API Bridge (Python)
+# DeepAPI — OpenAI-Compatible API Bridge for DeepSeek
 
-[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey.svg)]()
-
-Dự án cầu nối trung gian chuyển đổi giao diện web của **DeepSeek Chat** thành chuẩn API tương thích hoàn toàn với **OpenAI (API Endpoint)**. Dự án được tối ưu hóa đặc biệt dành cho các AI Agent (Cline, Roo Code, Qwen Companion...) chạy ổn định trên máy cá nhân mà không lo bị chặn bởi Cloudflare.
-
----
-
-## ✨ Tính Năng Nổi Bật
-
-- 🥷 **Bypass Cloudflare & Bot-Detection**: Sử dụng `cloakbrowser` (Playwright) mô phỏng vân tay trình duyệt thật (Chrome/Windows), vượt qua mọi chốt chặn bot.
-- 🔄 **Xoay Vòng Nhiều Tài Khoản (Account Rotation)**: Tự động xoay vòng nhiều tài khoản cấu hình qua file `.env` bằng thuật toán Round-robin để tránh dính giới hạn cuộc gọi (Rate Limit).
-- 🛠️ **Tự Động Đăng Nhập Lại (Auto-Recovery)**: Phát hiện và tự động đăng nhập lại khi token/phiên làm việc của DeepSeek hết hạn mà không làm gián đoạn Agent.
-- ⚙️ **Cấu Hình Tiện Lợi**: Quản lý thông qua file cấu hình môi trường `.env` an toàn và trực quan.
+> **⚠️ TUYÊN BỐ MIỄN TRỪ TRÁCH NHIỆM**
+>
+> Dự án này chỉ phục vụ **mục đích nghiên cứu, học tập và thử nghiệm cá nhân**.
+> Người dùng chịu hoàn toàn trách nhiệm khi sử dụng. Không được dùng cho mục đích
+> thương mại hoặc vi phạm điều khoản dịch vụ của bên thứ ba.
 
 ---
 
-## 🛠️ Hướng Dẫn Cài Đặt Chi Tiết
+## Giới thiệu
 
-### Bước 1: Cài đặt thư viện Python
-Mở Terminal tại thư mục dự án và cài đặt các thư viện cần thiết:
+DeepAPI là REST API bridge tương thích OpenAI, cho phép gọi DeepSeek Chat thông qua
+giao diện chuẩn `/v1/chat/completions`. Hỗ trợ **tool calling** (function calling)
+qua XML parsing, streaming, multi-account, và tự động xoay vòng tài khoản.
+
+Nguồn tham khảo:
+- [lessweb/deepcode-cli](https://github.com/lessweb/deepcode-cli.git)
+- [taitestgame/deepapi](https://github.com/taitestgame/deepapi.git)
+
+Ứng dụng cho:
+- [deepcode-cli](https://github.com/lessweb/deepcode-cli.git) — CLI client cho DeepSeek
+- [opencode](https://opencode.ai) — CLI agent mã nguồn mở
+
+## Tính năng
+
+- ✅ API tương thích OpenAI (`/v1/models`, `/v1/chat/completions`)
+- ✅ **Tool Calling** — parse XML tool calls từ model output (28+ định dạng)
+- ✅ Streaming & Non-streaming SSE
+- ✅ Multi-account round-robin (xoay vòng sau mỗi request)
+- ✅ Tự động refresh token (10 phút / lần)
+- ✅ Auto-continue khi response dài (tối đa 8 vòng)
+- ✅ PoW solver qua cloakbrowser (Chromium headless)
+- ✅ Hỗ trợ model: deepseek-v4-flash, deepseek-v4-pro, deepseek-chat, deepseek-reasoner
+- ✅ Tự động inject tool descriptions vào system prompt
+- ✅ Strip tool call XML khỏi text response (giữ nguyên code blocks)
+
+## Yêu cầu
+
+- **Python** 3.12+
+- **Node.js** 24+
+- **Ubuntu 24.04** (hoặc Linux tương tự)
+- **Playwright / Chromium** (cho PoW solver)
+
+## Cài đặt
+
+### 1. Cài dependencies
+
 ```bash
-pip install -r requirements.txt
+# Python
+pip install --break-system-packages flask>=3.0.0 cloakbrowser>=0.3.30
+
+# Node.js + Playwright
+curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+sudo apt-get install -y nodejs
+npx playwright install-deps chromium
+npx playwright install chromium
 ```
 
-### Bước 2: Tải xuống Trình duyệt CloakBrowser (Bắt buộc)
-Do thư viện cần một trình duyệt Chromium tùy chỉnh vân tay đặc biệt để vượt qua Cloudflare, bạn cần tải gói zip này:
-- 🔗 **Link tải trực tiếp (cho Windows 64-bit)**: [cloakbrowser-windows-x64.zip](https://github.com/CloakHQ/cloakbrowser/releases/download/chromium-v146.0.7680.177.5/cloakbrowser-windows-x64.zip)
+### 2. Cấu hình tài khoản
 
-#### Cách cài đặt thủ công:
-Sau khi tải xuống, bạn hãy giải nén toàn bộ nội dung trong file zip vào đường dẫn thư mục sau trên máy tính của bạn:
-- **Windows**: `C:\Users\<Tên_User_Của_Bạn>\.cloakbrowser\chromium-146.0.7680.177.5\`
-*(Đảm bảo file `chrome.exe` nằm trực tiếp ngay trong thư mục `chromium-146.0.7680.177.5`)*
-
----
-
-### Bước 3: Cấu hình File `.env`
-1. Copy file `.env.example` thành file `.env`
-2. Mở file `.env` lên và điền cấu hình tài khoản DeepSeek của bạn:
+Tạo file `.env` trong thư mục dự án:
 
 ```ini
-# Đăng nhập 1 tài khoản mặc định
-DEEPSEEK_EMAIL=your_email@gmail.com
-DEEPSEEK_PASSWORD=your_password_here
+# Tài khoản DeepSeek (email:password, phân cách bằng dấu phẩy)
+DEEPSEEK_ACCOUNTS=email1@gmail.com:password1,email2@gmail.com:password2
 
-# HOẶC xoay vòng nhiều tài khoản cùng lúc (ngăn cách bằng dấu phẩy)
-# DEEPSEEK_ACCOUNTS=email1@gmail.com:pass1,email2@gmail.com:pass2
-
-# Cấu hình API kết nối
-API_KEY=sk-my-secret-key-1
+# API key cho client gọi vào server này
+API_KEY=deepcode2026
 PORT=5001
 HOST=0.0.0.0
 ```
 
----
+### 3. Chạy server
 
-## 🚀 Cách Sử Dụng
-
-### 1. Khởi chạy Server trung gian:
-Chạy lệnh sau tại thư mục dự án để kích hoạt Flask API Server:
 ```bash
-python server.py
+# Chạy trực tiếp
+python3 server.py
+
+# Hoặc dùng systemd (khuyến nghị)
+sudo tee /etc/systemd/system/deepapi.service << 'EOF'
+[Unit]
+Description=DeepSeek API Server
+After=network.target
+
+[Service]
+Type=simple
+User=vps2
+WorkingDirectory=/home/vps2/deepapi
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Asia/Shanghai
+ExecStart=/usr/bin/python3 /home/vps2/deepapi/server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now deepapi
 ```
-Khi hiển thị thông báo `[auth] Login OK` và Server chạy ở cổng `5001` là bạn đã cấu hình thành công!
 
-### 2. Cấu hình trên các AI Agent (Cline, Roo Code...):
-Truyền các tham số sau vào phần cấu hình của Agent để liên kết:
-- **Provider (Nhà cung cấp)**: Chọn `OpenAI Compatible` (hoặc `Custom Provider`)
-- **Base URL**: `http://localhost:5001/v1`
-- **API Key**: `sk-my-secret-key-1` *(hoặc key bạn tự đặt trong file `.env`)*
-- **Model ID**: `deepseek-v4-flash` *(hoặc mô hình nâng cao `deepseek-v4-pro`)*
+## Sử dụng
 
----
+### Liệt kê models
 
-## ⚠️ Miễn Trừ Trách Nhiệm
+```bash
+curl http://localhost:5001/v1/models \
+  -H "Authorization: Bearer deepcode2026"
+```
 
-Dự án này được viết ra nhằm mục đích học tập, nghiên cứu cá nhân và tìm hiểu cơ chế hoạt động của API. Tác giả không chịu trách nhiệm cho bất kỳ vấn đề nào liên quan đến tài khoản của bạn trên nền tảng gốc.
+### Chat completion (stream)
+
+```bash
+curl http://localhost:5001/v1/chat/completions \
+  -H "Authorization: Bearer deepcode2026" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-v4-pro",
+    "stream": true,
+    "messages": [{"role": "user", "content": "Xin chào"}]
+  }'
+```
+
+### Chat completion (non-stream)
+
+```bash
+curl http://localhost:5001/v1/chat/completions \
+  -H "Authorization: Bearer deepcode2026" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-v4-pro",
+    "stream": false,
+    "messages": [{"role": "user", "content": "1+1=?"}]
+  }'
+```
+
+### Tool calling (OpenAI format)
+
+```bash
+curl http://localhost:5001/v1/chat/completions \
+  -H "Authorization: Bearer deepcode2026" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-v4-pro",
+    "stream": true,
+    "messages": [{"role": "user", "content": "tạo file /home/user/test.txt nội dung hello"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "write",
+        "description": "Create a file",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {"type": "string"},
+            "content": {"type": "string"}
+          },
+          "required": ["file_path", "content"]
+        }
+      }
+    }]
+  }'
+```
+
+### Cấu hình OpenCode
+
+OpenCode CLI sử dụng file `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "deepapi": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "DeepAPI",
+      "options": {
+        "baseURL": "http://127.0.0.1:5001/v1",
+        "apiKey": "deepcode2026"
+      },
+      "models": {
+        "deepseek-chat": {
+          "name": "DeepAPI Chat"
+        },
+        "deepseek-v4-flash": {
+          "name": "DeepAPI V4 Flash",
+          "options": {
+            "thinking": { "type": "enabled" },
+            "reasoning": { "effort": "medium" }
+          }
+        },
+        "deepseek-v4-pro": {
+          "name": "DeepAPI V4 Pro",
+          "options": {
+            "thinking": { "type": "enabled" },
+            "reasoning": { "effort": "high" }
+          }
+        }
+      }
+    }
+  },
+  "model": "deepapi/deepseek-v4-flash"
+}
+```
+
+| Trường | Giá trị | Giải thích |
+|--------|---------|------------|
+| `provider.<name>.npm` | `@ai-sdk/openai-compatible` | Provider package cho OpenAI‑compatible API |
+| `provider.<name>.options.baseURL` | `http://127.0.0.1:5001/v1` | URL của DeepAPI server |
+| `provider.<name>.options.apiKey` | `deepcode2026` | API key (khớp với `API_KEY` trong `.env`) |
+| `model` | `deepapi/<model_name>` | Model mặc định, format: `provider_id/model_id` |
+| `thinking.type` | `"enabled"` | Bật reasoning content |
+| `reasoning.effort` | `"high"`, `"medium"`, `"low"` | Mức reasoning effort |
+
+#### Chọn model mặc định
+
+Đổi `model` để chọn model khởi động:
+- `"deepapi/deepseek-v4-flash"` — nhanh, phù hợp task đơn giản
+- `"deepapi/deepseek-v4-pro"` — mạnh, phù hợp task phức tạp
+- `"deepapi/deepseek-chat"` — không thinking (chat thuần)
+
+#### Kiểm tra kết nối
+
+```bash
+opencode "Hello, world!"
+```
+
+Nếu có lỗi auth, kiểm tra:
+- Server đã chạy chưa? `curl http://127.0.0.1:5001/v1/models -H "Authorization: Bearer deepcode2026"`
+- `baseURL` có đúng không? Phải kết thúc bằng `/v1`
+- `apiKey` trong config có khớp với `API_KEY` trong `.env` không?
+
+### Cấu hình DeepCode CLI
+
+Trong `~/.deepcode/settings.json`:
+
+```json
+{
+  "env": {
+    "MODEL": "deepseek-v4-pro",
+    "BASE_URL": "http://localhost:5001/v1",
+    "API_KEY": "deepcode2026"
+  },
+  "thinkingEnabled": true,
+  "reasoningEffort": "max"
+}
+```
+
+## Kiến trúc
+
+```
+Client → POST /v1/chat/completions (OpenAI format)
+    → server.py: auth → rotate account → build_prompt → call DeepSeek
+    → deepseek_client.py: cloakbrowser → fetch() DeepSeek API
+    → parse_sse_lines() → tách text, thinking, tool calls
+    → tool_parser.py: parse XML tool calls (28+ formats)
+    → Nếu có XML tool calls → convert sang OpenAI tool_calls format
+    → Response: SSE stream hoặc JSON
+```
+
+### Account rotation
+
+```
+Mỗi request:
+  1. rotate_account() → tăng index (vòng tròn)
+  2. get_active_token() → lấy token của account đó
+  3. Xử lý request với account cố định (kể cả auto-continue + tool call)
+
+Khi lỗi:
+  - invalidate_token() → đánh dấu token hỏng
+  - get_active_token(force_refresh=True) → login lại hoặc chuyển account kế
+
+Refresh định kỳ:
+  - Thread nền login lại tất cả accounts mỗi 600 giây
+```
+
+## Tool Calling
+
+Server hỗ trợ **28+ định dạng XML** tool calls từ model output. Các định dạng chính:
+
+| Format | Ví dụ |
+|--------|-------|
+| Format 1 (chuẩn) | `<tool>bash</tool><json>{"command":"ls"}</json>` |
+| Format 2 (legacy) | `<function_call name="bash"><args>{"command":"ls"}</args></function_call>` |
+| Format 3 (CodeAI) | `<tool><name>bash</name><parameter name="command" string="true">ls</parameter></tool>` |
+| Format 4 (bare) | `<bash>ls</bash>` |
+| Format 6 (nested) | `<tool><bash><json>{"command":"ls"}</json></bash></tool>` |
+| Format 10 | `<tool><tool_call>bash</tool_call><json>{"command":"ls"}</json></tool>` |
+| Format 12 (raw JSON) | `<tool>{"name":"bash","command":"ls"}</tool>` |
+| Format 26 (multi) | `<tools><tool>bash</tool><json>{"cmd":"ls"}</json>...</tools>` |
+| Format 27 (bracket) | `[bash] ls [/bash]` |
+| Format 28 (plain) | `tool: bash {"command":"ls"}` |
+
+Server inject tool descriptions vào system prompt và parse XML từ response.
+Nếu model output chứa tool call XML không hợp lệ, server gửi lỗi text về để
+model tự sửa.
+
+## Cấu trúc thư mục
+
+```
+deepapi/
+├── server.py              # Entry point (Flask app)
+├── config.py              # Config: accounts, models, API keys
+├── routes.py              # API routes + request handling
+├── token_manager.py       # Multi-account rotation + token management
+├── deepseek_client.py     # DeepSeek API client (PoW, SSE, session)
+├── sse_handler.py         # SSE chunk builders
+├── stream_handler.py      # Stream generators (auto-continue, retry)
+├── tool_parser.py         # XML tool call parser (28+ formats)
+├── prompt_builder.py      # System prompt builder + tool injection
+├── .env                   # Environment variables (accounts, keys)
+├── requirements.txt       # Python dependencies
+├── tests/                 # Unit tests
+└── README.md              # This file
+```
+
+## Quản lý
+
+```bash
+# Systemd
+sudo systemctl status deepapi      # Xem trạng thái
+sudo systemctl restart deepapi     # Khởi động lại
+sudo systemctl stop deepapi        # Dừng
+
+# Logs
+journalctl -u deepapi -f           # Xem logs realtime
+journalctl -u deepapi --since "5 minutes ago"  # Logs 5 phút gần nhất
+
+# Kiểm tra debug
+curl http://localhost:5001/v1/models -H "Authorization: Bearer deepcode2026"
+```
+
+## Development
+
+```bash
+# Chạy test
+python3 -c "import sys; sys.path.insert(0, '.'); exec(open('tests/...').read())"
+
+# Kiểm tra syntax
+python3 -c "import py_compile; py_compile.compile('tool_parser.py', doraise=True)"
+
+# Debug account rotation
+export DEBUG_AUTH=1
+python3 server.py
+```
+
+## License
+
+Dự án này chỉ dành cho **mục đích nghiên cứu và học tập**.
+
+## Credits
+
+- [lessweb/deepcode-cli](https://github.com/lessweb/deepcode-cli.git) — nguồn tham khảo
+- [taitestgame/deepapi](https://github.com/taitestgame/deepapi.git) — nguồn tham khảo
+- [opencode](https://opencode.ai) — ứng dụng CLI agent

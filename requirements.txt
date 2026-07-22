@@ -1,8 +1,2 @@
 flask>=3.0.0
 cloakbrowser>=0.3.30
-threading
-queue
-uuid
-urllib.request
-struct
-base64
